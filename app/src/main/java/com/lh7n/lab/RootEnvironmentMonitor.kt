@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class RootEnvironmentMonitor(private val context: Context) {
 
@@ -24,6 +27,12 @@ class RootEnvironmentMonitor(private val context: Context) {
         "/data/adb/ksu",
         "/sbin/.magisk"
     )
+
+    private fun currentDate(): String =
+        SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss",
+            Locale.US
+        ).format(Date())
 
     private fun getProp(name: String): String {
         return try {
@@ -127,7 +136,7 @@ class RootEnvironmentMonitor(private val context: Context) {
         return buildString {
             appendLine("LH7n LAB — ADVANCED ROOT ENVIRONMENT")
             appendLine("====================================")
-            appendLine("Date: ${System.currentTimeMillis()}")
+            appendLine("Date: ${currentDate()}")
             appendLine()
 
             appendLine("[1] MANAGER DETECTION")
@@ -199,6 +208,169 @@ class RootEnvironmentMonitor(private val context: Context) {
             appendLine("- Protected paths may not be visible to this app.")
             appendLine("- Package detection does not prove KernelSU integration.")
             appendLine("- This scan cannot prove Root absence.")
+        }
+    }
+
+    fun confidenceReport(): String {
+        val installedManagers = managers.filter {
+            packageExists(it.second)
+        }
+
+        val foundPaths = visiblePaths()
+        val tags = Build.TAGS ?: ""
+
+        val debuggable = getProp("ro.debuggable")
+        val secure = getProp("ro.secure")
+        val buildType = getProp("ro.build.type")
+
+        val verifiedBoot = getProp("ro.boot.verifiedbootstate")
+        val bootLocked = getProp("ro.boot.flash.locked")
+        val vbmeta = getProp("ro.boot.vbmeta.device_state")
+
+        val confirmed = mutableListOf<String>()
+        val potential = mutableListOf<String>()
+        val unavailable = mutableListOf<String>()
+
+        installedManagers.forEach {
+            confirmed.add("تم رصد تطبيق ${it.first} على الجهاز")
+            potential.add(
+                "وجود تطبيق ${it.first} لا يثبت تكامل Root"
+            )
+        }
+
+        if (foundPaths.isNotEmpty()) {
+            foundPaths.forEach {
+                potential.add("مسار ظاهر يحتاج إلى تحقق مستقل: $it")
+            }
+        } else {
+            unavailable.add(
+                "لم تظهر مسارات Root المعروفة ضمن نطاق وصول التطبيق"
+            )
+        }
+
+        if (tags.isNotBlank()) {
+            confirmed.add("Build Tags: $tags")
+            if (tags.contains("test-keys", ignoreCase = true)) {
+                potential.add("Build Tags تحتوي test-keys")
+            }
+        } else {
+            unavailable.add("Build Tags غير متاحة")
+        }
+
+        if (buildType.isNotBlank()) {
+            confirmed.add("Build Type: $buildType")
+            if (buildType != "user") {
+                potential.add("نوع البناء ليس user")
+            }
+        } else {
+            unavailable.add("Build Type غير متاح")
+        }
+
+        if (debuggable.isNotBlank()) {
+            confirmed.add("ro.debuggable: $debuggable")
+            if (debuggable == "1") {
+                potential.add("ro.debuggable يساوي 1")
+            }
+        } else {
+            unavailable.add("ro.debuggable غير متاح")
+        }
+
+        if (secure.isNotBlank()) {
+            confirmed.add("ro.secure: $secure")
+            if (secure == "0") {
+                potential.add("ro.secure يساوي 0")
+            }
+        } else {
+            unavailable.add("ro.secure غير متاح")
+        }
+
+        if (verifiedBoot.isNotBlank()) {
+            confirmed.add("Verified Boot: $verifiedBoot")
+        } else {
+            unavailable.add("Verified Boot غير متاح")
+        }
+
+        if (bootLocked.isNotBlank()) {
+            confirmed.add("Bootloader Locked: $bootLocked")
+        } else {
+            unavailable.add("حالة قفل Bootloader غير متاحة")
+        }
+
+        if (vbmeta.isNotBlank()) {
+            confirmed.add("VBMeta State: $vbmeta")
+        } else {
+            unavailable.add("VBMeta State غير متاح")
+        }
+
+        return buildString {
+            appendLine("LH7N LAB — ROOT CONFIDENCE ANALYZER")
+            appendLine("===================================")
+            appendLine("Date: ${currentDate()}")
+            appendLine()
+
+            appendLine("[1] ANALYSIS QUALITY")
+            appendLine("-------------------")
+            appendLine("Evidence completeness: LIMITED")
+            appendLine("Root conclusion confidence: INSUFFICIENT")
+            appendLine("Reason: Root authorization was not tested")
+            appendLine()
+
+            appendLine("[2] CONFIRMED OBSERVATIONS")
+            appendLine("-------------------------")
+            if (confirmed.isEmpty()) {
+                appendLine("No confirmed observations available")
+            } else {
+                confirmed.forEach {
+                    appendLine("- $it")
+                }
+            }
+
+            appendLine()
+            appendLine("[3] POTENTIAL INDICATORS")
+            appendLine("-----------------------")
+            if (potential.isEmpty()) {
+                appendLine("No potential indicators detected")
+            } else {
+                potential.forEach {
+                    appendLine("- $it")
+                }
+            }
+
+            appendLine()
+            appendLine("[4] UNAVAILABLE OR LIMITED")
+            appendLine("--------------------------")
+            if (unavailable.isEmpty()) {
+                appendLine("No unavailable property values detected")
+            } else {
+                unavailable.forEach {
+                    appendLine("- $it")
+                }
+            }
+
+            appendLine()
+            appendLine("[5] NOT TESTED")
+            appendLine("--------------")
+            appendLine("- Root authorization")
+            appendLine("- Actual Root privilege")
+            appendLine("- KernelSU kernel integration")
+            appendLine()
+
+            appendLine("[6] FINAL ASSESSMENT")
+            appendLine("--------------------")
+            appendLine("Root Status: UNKNOWN")
+            appendLine("Kernel Integration: UNKNOWN")
+            appendLine("Manager Detection: " +
+                if (installedManagers.isEmpty()) "None detected"
+                else installedManagers.joinToString { it.first })
+            appendLine()
+            appendLine("This report evaluates available evidence only.")
+            appendLine("It does not prove Root presence or absence.")
+            appendLine()
+            appendLine("SAFETY")
+            appendLine("------")
+            appendLine("- No su command executed")
+            appendLine("- No elevated permission requested")
+            appendLine("- No system files modified")
         }
     }
 }
