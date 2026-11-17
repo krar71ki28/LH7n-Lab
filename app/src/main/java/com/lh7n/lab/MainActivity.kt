@@ -269,7 +269,25 @@ class MainActivity : Activity() {
             Thread {
                 val result = RootCapabilityProbe.run()
                 runOnUiThread {
-                    showReport("Root Capability Test", result)
+                    preferences.edit()
+                        .putString("last_root_probe", result.toReport())
+                        .apply()
+
+                    val entries = (preferences.getString("history", "") ?: "")
+                        .lines()
+                        .filter { it.isNotBlank() }
+                        .toMutableList()
+
+                    entries.add(
+                        0,
+                        "${result.timestamp} | Root Capability: ${result.status}"
+                    )
+
+                    preferences.edit()
+                        .putString("history", entries.take(30).joinToString("\n"))
+                        .apply()
+
+                    report.text = result.toReport()
                 }
             }.start()
         })
