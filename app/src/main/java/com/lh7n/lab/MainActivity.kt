@@ -255,10 +255,10 @@ class MainActivity : Activity() {
 
         content.addView(makeButton("فحص بيئة Root المتقدم") {
             showReport("Root Environment Status", RootEnvironmentMonitor(this).report())
+        })
 
         content.addView(makeButton("تحليل موثوقية Root") {
             showReport("Root Confidence Analyzer", RootEnvironmentMonitor(this).confidenceReport())
-        })
         })
 
         content.addView(makeButton("فحص مزوّد Root") {
