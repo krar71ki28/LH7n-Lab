@@ -121,7 +121,7 @@ class MainActivity : Activity() {
         expectedHash = EditText(this).apply {
             hint = "الصق بصمة SHA-256 المتوقعة هنا"
             textSize = 13f
-            singleLine = true
+            isSingleLine = true
         }
         content.addView(expectedHash)
 
