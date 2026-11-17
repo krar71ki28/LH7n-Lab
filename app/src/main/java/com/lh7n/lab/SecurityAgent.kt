@@ -24,7 +24,8 @@ data class SecurityScanResult(
     val device: String,
     val android: String,
     val findings: List<SecurityFinding>,
-    val limitations: List<String>
+    val limitations: List<String>,
+    val bulletinReport: String = ""
 ) {
     fun toReport(): String = buildString {
         appendLine("LH7n SECURITY AGENT")
@@ -50,6 +51,12 @@ data class SecurityScanResult(
         appendLine("LIMITATIONS")
         appendLine("-----------")
         limitations.forEach { appendLine("- $it") }
+
+        appendLine()
+        if (bulletinReport.isNotBlank()) {
+            appendLine()
+            appendLine(bulletinReport)
+        }
 
         appendLine()
         appendLine("SCANNER MODE: LOCAL READ-ONLY")
@@ -371,12 +378,18 @@ object SecurityAgent {
             }
         ).coerceIn(0, 100)
 
+        val bulletinResult = AndroidBulletinIntelligence.scan(
+            installedPatch = patch,
+            androidMajor = Build.VERSION.SDK_INT - 20
+        )
+
         return SecurityScanResult(
             timestamp = timestamp(),
             score = score,
             device = "${Build.MANUFACTURER} ${Build.MODEL}",
             android = "${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
             findings = findings,
+            bulletinReport = bulletinResult.report,
             limitations = listOf(
                 "Android package visibility can hide applications from this scanner.",
                 "This version does not inspect every installed application's permissions.",
