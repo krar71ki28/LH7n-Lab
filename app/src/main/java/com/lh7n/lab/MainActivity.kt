@@ -5,10 +5,9 @@ import android.os.Bundle
 import android.os.Build
 import android.content.Intent
 import android.graphics.Color
-import android.view.Gravity
-import android.view.View
 import android.widget.*
 import android.net.Uri
+import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -20,20 +19,73 @@ class MainActivity : Activity() {
     private fun getProp(name: String): String {
         return try {
             val process = Runtime.getRuntime().exec(arrayOf("getprop", name))
-            process.inputStream.bufferedReader().use { it.readText().trim() }
+            process.inputStream.bufferedReader().use {
+                it.readText().trim().ifBlank { "غير متاح" }
+            }
         } catch (_: Exception) {
             "غير متاح"
         }
     }
 
+    private fun rootIndicators(): String {
+        val paths = listOf(
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su",
+            "/system_ext/bin/su",
+            "/vendor/bin/su",
+            "/debug_ramdisk/su",
+            "/data/adb/magisk"
+        )
+
+        val found = paths.filter { path ->
+            try {
+                File(path).exists()
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        val tags = Build.TAGS ?: ""
+        val testKeys = tags.contains("test-keys", ignoreCase = true)
+
+        val status = when {
+            found.isNotEmpty() || testKeys ->
+                "تم العثور على مؤشرات محتملة لـ Root"
+            else ->
+                "لم يتم العثور على مؤشرات Root معروفة"
+        }
+
+        return buildString {
+            appendLine("Root Detection")
+            appendLine("================")
+            appendLine("النتيجة: $status")
+            appendLine("Build Tags: ${tags.ifBlank { "غير متاح" }}")
+            appendLine("مسارات مؤشرات Root الموجودة:")
+
+            if (found.isEmpty()) {
+                appendLine("لم يتم العثور على ملفات في المسارات المفحوصة")
+            } else {
+                found.forEach { appendLine(it) }
+            }
+
+            appendLine()
+            appendLine("حالة صلاحية su الفعلية: لم يتم اختبارها")
+            appendLine("هذه نتيجة فحص مؤشرات فقط، وليست إثباتاً")
+            appendLine("لوجود Root أو عدم وجوده.")
+            appendLine("لم يتم طلب صلاحيات مرتفعة أو تنفيذ su.")
+        }
+    }
+
     private fun deviceReport(): String {
         val kernel = System.getProperty("os.version") ?: "غير متاح"
-        val kmiMatch = Regex("android(\\d+)-(\\d+\\.\\d+)")
+
+        val branchMatch = Regex("android(\\d+)-(\\d+)")
             .find(kernel)
 
-        val kmi = kmiMatch?.let {
+        val branch = branchMatch?.let {
             "android${it.groupValues[1]}-${it.groupValues[2]}"
-        } ?: "لم يتم التعرف عليه"
+        } ?: "لم يتم التعرف على فرع Android في إصدار Kernel"
 
         return """
             LH7n LAB — DEVICE REPORT
@@ -51,8 +103,12 @@ class MainActivity : Activity() {
             Kernel:
             $kernel
 
-            KMI المستنتج:
-            $kmi
+            Kernel Branch Tag:
+            $branch
+
+            KMI:
+            لا يمكن تأكيد KMI من رقم Kernel وحده.
+            يحتاج إلى معلومات إضافية من النظام.
 
             ABI:
             ${Build.SUPPORTED_ABIS.joinToString()}
@@ -68,6 +124,8 @@ class MainActivity : Activity() {
 
             VBMeta State:
             ${getProp("ro.boot.vbmeta.device_state")}
+
+            ${rootIndicators()}
 
             ملاحظة:
             هذه معلومات تشخيصية للقراءة فقط.
@@ -116,6 +174,10 @@ class MainActivity : Activity() {
             report.text = deviceReport()
         })
 
+        content.addView(makeButton("فحص مؤشرات Root") {
+            report.text = rootIndicators()
+        })
+
         addText(content, "فحص SHA-256 للملفات", 20f)
 
         expectedHash = EditText(this).apply {
@@ -135,7 +197,7 @@ class MainActivity : Activity() {
 
         content.addView(makeButton("نسخ تقرير الجهاز") {
             val clipboard = getSystemService(CLIPBOARD_SERVICE)
-                    as android.content.ClipboardManager
+                as android.content.ClipboardManager
             clipboard.setPrimaryClip(
                 android.content.ClipData.newPlainText(
                     "LH7n Lab Report",
@@ -146,7 +208,7 @@ class MainActivity : Activity() {
         })
 
         report = TextView(this).apply {
-            text = "اضغط فحص معلومات الجهاز لعرض التقرير."
+            text = "اختر فحص معلومات الجهاز أو فحص مؤشرات Root."
             textSize = 13f
             typeface = android.graphics.Typeface.MONOSPACE
             setTextColor(Color.rgb(25, 35, 50))
