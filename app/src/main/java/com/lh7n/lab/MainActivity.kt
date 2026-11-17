@@ -10,11 +10,19 @@ import android.net.Uri
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.Date
+import java.text.SimpleDateFormat
 
 class MainActivity : Activity() {
 
     private lateinit var report: TextView
     private lateinit var expectedHash: EditText
+
+    private var pendingExport = ""
+
+    private val preferences by lazy {
+        getSharedPreferences("lh7n_lab_history", MODE_PRIVATE)
+    }
 
     private fun getProp(name: String): String {
         return try {
@@ -25,6 +33,69 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             "غير متاح"
         }
+    }
+
+    private fun timestamp(): String {
+        return SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss",
+            Locale.US
+        ).format(Date())
+    }
+
+    private fun recordHistory(label: String) {
+        val old = preferences.getString("history", "") ?: ""
+
+        val entries = old.lines()
+            .filter { it.isNotBlank() }
+            .toMutableList()
+
+        entries.add(0, "${timestamp()} | $label")
+
+        preferences.edit()
+            .putString("history", entries.take(30).joinToString("\n"))
+            .apply()
+    }
+
+    private fun showReport(label: String, content: String) {
+        report.text = content
+        recordHistory(label)
+    }
+
+    private fun historyReport(): String {
+        val history = preferences.getString("history", "") ?: ""
+
+        return """
+            LH7n LAB — DIAGNOSTIC HISTORY
+            =============================
+
+            عدد السجلات:
+            ${history.lines().count { it.isNotBlank() }}
+
+            السجلات الأحدث أولاً:
+
+            ${history.ifBlank { "لا توجد عمليات فحص محفوظة." }}
+
+            التخزين:
+            SharedPreferences — Local Device
+
+            الحد الأقصى:
+            30 سجل
+        """.trimIndent()
+    }
+
+    private fun exportReport() {
+        pendingExport = report.text.toString()
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(
+                Intent.EXTRA_TITLE,
+                "LH7n-Lab-${timestamp().replace(":", "-")}.txt"
+            )
+        }
+
+        startActivityForResult(intent, 101)
     }
 
     private fun rootIndicators(): String {
@@ -90,6 +161,9 @@ class MainActivity : Activity() {
         return """
             LH7n LAB — DEVICE REPORT
             ========================
+
+            تاريخ الفحص:
+            ${timestamp()}
 
             الشركة: ${Build.MANUFACTURER}
             الجهاز: ${Build.DEVICE}
@@ -171,11 +245,19 @@ class MainActivity : Activity() {
         addText(content, "Device Diagnostics & Compatibility", 14f)
 
         content.addView(makeButton("فحص معلومات الجهاز") {
-            report.text = deviceReport()
+            showReport("Device Diagnostics", deviceReport())
         })
 
         content.addView(makeButton("فحص مؤشرات Root") {
-            report.text = rootIndicators()
+            showReport("Root Detection", rootIndicators())
+        })
+
+        content.addView(makeButton("عرض سجل الفحوصات") {
+            report.text = historyReport()
+        })
+
+        content.addView(makeButton("تصدير التقرير TXT") {
+            exportReport()
         })
 
         addText(content, "فحص SHA-256 للملفات", 20f)
@@ -195,20 +277,26 @@ class MainActivity : Activity() {
             startActivityForResult(intent, 100)
         })
 
-        content.addView(makeButton("نسخ تقرير الجهاز") {
+        content.addView(makeButton("نسخ التقرير") {
             val clipboard = getSystemService(CLIPBOARD_SERVICE)
                 as android.content.ClipboardManager
+
             clipboard.setPrimaryClip(
                 android.content.ClipData.newPlainText(
                     "LH7n Lab Report",
                     report.text
                 )
             )
-            Toast.makeText(this, "تم نسخ التقرير", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "تم نسخ التقرير",
+                Toast.LENGTH_SHORT
+            ).show()
         })
 
         report = TextView(this).apply {
-            text = "اختر فحص معلومات الجهاز أو فحص مؤشرات Root."
+            text = "اختر عملية فحص لعرض نتائجها."
             textSize = 13f
             typeface = android.graphics.Typeface.MONOSPACE
             setTextColor(Color.rgb(25, 35, 50))
@@ -230,9 +318,36 @@ class MainActivity : Activity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode != 100 || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
 
         val uri: Uri = data?.data ?: return
+
+        if (requestCode == 101) {
+            try {
+                val output = contentResolver.openOutputStream(uri)
+                    ?: throw Exception("تعذر إنشاء الملف")
+
+                output.use {
+                    it.write(pendingExport.toByteArray(Charsets.UTF_8))
+                }
+
+                Toast.makeText(
+                    this,
+                    "تم تصدير التقرير بنجاح",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this,
+                    "فشل التصدير: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            return
+        }
+
+        if (requestCode != 100) return
 
         try {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -240,6 +355,7 @@ class MainActivity : Activity() {
                 ?: throw Exception("تعذر فتح الملف")
 
             val buffer = ByteArray(8192)
+
             input.use {
                 while (true) {
                     val count = it.read(buffer)
@@ -263,9 +379,12 @@ class MainActivity : Activity() {
                 else -> "تطابق البصمة: لا"
             }
 
-            report.text = """
+            val result = """
                 SHA-256 FILE REPORT
                 ===================
+
+                تاريخ الفحص:
+                ${timestamp()}
 
                 البصمة المحسوبة:
                 $actual
@@ -278,8 +397,10 @@ class MainActivity : Activity() {
                 البرنامج أو توافقه مع الجهاز.
             """.trimIndent()
 
+            showReport("SHA-256 File Check", result)
+
         } catch (e: Exception) {
-            report.text = "فشل الفحص: ${e.message}"
+            showReport("SHA-256 Error", "فشل الفحص: ${e.message}")
         }
     }
 }
