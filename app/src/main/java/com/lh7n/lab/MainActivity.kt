@@ -17,12 +17,14 @@ class MainActivity : Activity() {
 
     private lateinit var report: TextView
     private lateinit var expectedHash: EditText
-
     private var pendingExport = ""
 
     private val preferences by lazy {
         getSharedPreferences("lh7n_lab_history", MODE_PRIVATE)
     }
+
+    private fun timestamp(): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
     private fun getProp(name: String): String {
         return try {
@@ -35,19 +37,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun timestamp(): String {
-        return SimpleDateFormat(
-            "yyyy-MM-dd HH:mm:ss",
-            Locale.US
-        ).format(Date())
-    }
-
     private fun recordHistory(label: String) {
-        val old = preferences.getString("history", "") ?: ""
-
-        val entries = old.lines()
-            .filter { it.isNotBlank() }
-            .toMutableList()
+        val entries = (preferences.getString("history", "") ?: "")
+            .lines().filter { it.isNotBlank() }.toMutableList()
 
         entries.add(0, "${timestamp()} | $label")
 
@@ -63,7 +55,6 @@ class MainActivity : Activity() {
 
     private fun historyReport(): String {
         val history = preferences.getString("history", "") ?: ""
-
         return """
             LH7n LAB — DIAGNOSTIC HISTORY
             =============================
@@ -75,17 +66,13 @@ class MainActivity : Activity() {
 
             ${history.ifBlank { "لا توجد عمليات فحص محفوظة." }}
 
-            التخزين:
-            SharedPreferences — Local Device
-
-            الحد الأقصى:
-            30 سجل
+            التخزين: SharedPreferences
+            الحد الأقصى: 30 سجل
         """.trimIndent()
     }
 
     private fun exportReport() {
         pendingExport = report.text.toString()
-
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "text/plain"
@@ -94,8 +81,46 @@ class MainActivity : Activity() {
                 "LH7n-Lab-${timestamp().replace(":", "-")}.txt"
             )
         }
-
         startActivityForResult(intent, 101)
+    }
+
+    private fun packageInstalled(packageName: String): Boolean {
+        return try {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun rootProviderReport(): String {
+        val providers = listOf(
+            "KernelSU" to "me.weishu.kernelsu",
+            "Magisk" to "com.topjohnwu.magisk"
+        )
+
+        val results = providers.map { (name, packageName) ->
+            val installed = packageInstalled(packageName)
+            "$name: " + if (installed) "تم العثور على التطبيق" else "لم يتم العثور على التطبيق"
+        }
+
+        return buildString {
+            appendLine("LH7n LAB — ROOT PROVIDER MONITOR")
+            appendLine("================================")
+            appendLine("تاريخ الفحص: ${timestamp()}")
+            appendLine()
+            results.forEach { appendLine(it) }
+            appendLine()
+            appendLine("حالة صلاحية Root: غير مختبرة")
+            appendLine("حالة Root الفعلية: غير معروفة")
+            appendLine()
+            appendLine("ملاحظات:")
+            appendLine("- وجود تطبيق المزوّد لا يثبت أن Root يعمل.")
+            appendLine("- عدم العثور على التطبيق لا ينفي وجود مزوّد آخر.")
+            appendLine("- لم يتم تنفيذ su أو طلب صلاحيات مرتفعة.")
+            appendLine("- الفحص يقرأ أسماء الحزم فقط.")
+        }
     }
 
     private fun rootIndicators(): String {
@@ -120,11 +145,10 @@ class MainActivity : Activity() {
         val tags = Build.TAGS ?: ""
         val testKeys = tags.contains("test-keys", ignoreCase = true)
 
-        val status = when {
-            found.isNotEmpty() || testKeys ->
-                "تم العثور على مؤشرات محتملة لـ Root"
-            else ->
-                "لم يتم العثور على مؤشرات Root معروفة"
+        val status = if (found.isNotEmpty() || testKeys) {
+            "تم العثور على مؤشرات محتملة لـ Root"
+        } else {
+            "لم يتم العثور على مؤشرات Root معروفة"
         }
 
         return buildString {
@@ -142,18 +166,14 @@ class MainActivity : Activity() {
 
             appendLine()
             appendLine("حالة صلاحية su الفعلية: لم يتم اختبارها")
-            appendLine("هذه نتيجة فحص مؤشرات فقط، وليست إثباتاً")
-            appendLine("لوجود Root أو عدم وجوده.")
+            appendLine("هذه نتيجة فحص مؤشرات فقط وليست إثباتاً.")
             appendLine("لم يتم طلب صلاحيات مرتفعة أو تنفيذ su.")
         }
     }
 
     private fun deviceReport(): String {
         val kernel = System.getProperty("os.version") ?: "غير متاح"
-
-        val branchMatch = Regex("android(\\d+)-(\\d+)")
-            .find(kernel)
-
+        val branchMatch = Regex("android(\\d+)-(\\d+)").find(kernel)
         val branch = branchMatch?.let {
             "android${it.groupValues[1]}-${it.groupValues[2]}"
         } ?: "لم يتم التعرف على فرع Android في إصدار Kernel"
@@ -162,8 +182,7 @@ class MainActivity : Activity() {
             LH7n LAB — DEVICE REPORT
             ========================
 
-            تاريخ الفحص:
-            ${timestamp()}
+            تاريخ الفحص: ${timestamp()}
 
             الشركة: ${Build.MANUFACTURER}
             الجهاز: ${Build.DEVICE}
@@ -174,36 +193,22 @@ class MainActivity : Activity() {
             SDK: ${Build.VERSION.SDK_INT}
             Build ID: ${Build.DISPLAY}
 
-            Kernel:
-            $kernel
-
-            Kernel Branch Tag:
-            $branch
+            Kernel: $kernel
+            Kernel Branch Tag: $branch
 
             KMI:
             لا يمكن تأكيد KMI من رقم Kernel وحده.
-            يحتاج إلى معلومات إضافية من النظام.
 
-            ABI:
-            ${Build.SUPPORTED_ABIS.joinToString()}
-
-            Bootloader:
-            ${Build.BOOTLOADER}
-
-            Verified Boot:
-            ${getProp("ro.boot.verifiedbootstate")}
-
-            Bootloader Locked:
-            ${getProp("ro.boot.flash.locked")}
-
-            VBMeta State:
-            ${getProp("ro.boot.vbmeta.device_state")}
+            ABI: ${Build.SUPPORTED_ABIS.joinToString()}
+            Bootloader: ${Build.BOOTLOADER}
+            Verified Boot: ${getProp("ro.boot.verifiedbootstate")}
+            Bootloader Locked: ${getProp("ro.boot.flash.locked")}
+            VBMeta State: ${getProp("ro.boot.vbmeta.device_state")}
 
             ${rootIndicators()}
 
             ملاحظة:
             هذه معلومات تشخيصية للقراءة فقط.
-            بعض الخصائص قد تكون محجوبة عن التطبيقات.
         """.trimIndent()
     }
 
@@ -252,6 +257,10 @@ class MainActivity : Activity() {
             showReport("Root Detection", rootIndicators())
         })
 
+        content.addView(makeButton("فحص مزوّد Root") {
+            showReport("Root Provider Monitor", rootProviderReport())
+        })
+
         content.addView(makeButton("عرض سجل الفحوصات") {
             report.text = historyReport()
         })
@@ -288,11 +297,7 @@ class MainActivity : Activity() {
                 )
             )
 
-            Toast.makeText(
-                this,
-                "تم نسخ التقرير",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, "تم نسخ التقرير", Toast.LENGTH_SHORT).show()
         })
 
         report = TextView(this).apply {
@@ -317,7 +322,6 @@ class MainActivity : Activity() {
         data: Intent?
     ) {
         super.onActivityResult(requestCode, resultCode, data)
-
         if (resultCode != RESULT_OK) return
 
         val uri: Uri = data?.data ?: return
@@ -326,17 +330,14 @@ class MainActivity : Activity() {
             try {
                 val output = contentResolver.openOutputStream(uri)
                     ?: throw Exception("تعذر إنشاء الملف")
-
                 output.use {
                     it.write(pendingExport.toByteArray(Charsets.UTF_8))
                 }
-
                 Toast.makeText(
                     this,
                     "تم تصدير التقرير بنجاح",
                     Toast.LENGTH_SHORT
                 ).show()
-
             } catch (e: Exception) {
                 Toast.makeText(
                     this,
@@ -355,7 +356,6 @@ class MainActivity : Activity() {
                 ?: throw Exception("تعذر فتح الملف")
 
             val buffer = ByteArray(8192)
-
             input.use {
                 while (true) {
                     val count = it.read(buffer)
@@ -383,9 +383,7 @@ class MainActivity : Activity() {
                 SHA-256 FILE REPORT
                 ===================
 
-                تاريخ الفحص:
-                ${timestamp()}
-
+                تاريخ الفحص: ${timestamp()}
                 البصمة المحسوبة:
                 $actual
 
@@ -398,7 +396,6 @@ class MainActivity : Activity() {
             """.trimIndent()
 
             showReport("SHA-256 File Check", result)
-
         } catch (e: Exception) {
             showReport("SHA-256 Error", "فشل الفحص: ${e.message}")
         }
