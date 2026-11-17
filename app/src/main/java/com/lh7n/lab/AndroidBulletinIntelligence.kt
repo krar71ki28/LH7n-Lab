@@ -6,6 +6,7 @@ import java.time.LocalDate
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.Locale
 
 data class BulletinCveRecord(
     val cve: String,
@@ -128,6 +129,7 @@ object AndroidBulletinIntelligence {
     ): MonthResult {
 
         val date = "%04d-%02d-01".format(
+            Locale.ROOT,
             month.year,
             month.monthValue
         )
@@ -317,6 +319,7 @@ Reason: Invalid Android security patch date.
 
                     diagnostics.add(
                         "%04d-%02d: TIMEOUT_OR_TASK_ERROR (%s)".format(
+                            Locale.ROOT,
                             month.year,
                             month.monthValue,
                             e.javaClass.simpleName
@@ -340,6 +343,7 @@ Reason: Invalid Android security patch date.
                 if (result.fetchStatus != "HTTP_200_PARSED") {
                     diagnostics.add(
                         "%04d-%02d: %s".format(
+                            Locale.ROOT,
                             month.year,
                             month.monthValue,
                             result.fetchStatus
