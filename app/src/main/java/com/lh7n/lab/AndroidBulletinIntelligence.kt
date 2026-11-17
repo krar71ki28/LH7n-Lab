@@ -134,28 +134,22 @@ object AndroidBulletinIntelligence {
             month.monthValue
         )
 
-        val source = "$BASE/$date"
-        val downloaded = fetch(source)
+        val source = if (month.year >= 2026) {
+            "$BASE/${month.year}/$date"
+        } else {
+            "$BASE/$date"
+        }
 
+        val downloaded = fetch(source)
         val html = downloaded.html
-            ?: return MonthResult(
-                emptyList(),
-                downloaded.status,
-                0,
-                0
-            )
+            ?: return MonthResult(emptyList(), downloaded.status, 0, 0)
 
         val headings = Regex(
             """(?is)<h2\b[^>]*>(.*?)</h2>"""
         ).findAll(html).toList()
 
         if (headings.isEmpty()) {
-            return MonthResult(
-                emptyList(),
-                "HTTP_200_NO_H2_HEADINGS",
-                0,
-                0
-            )
+            return MonthResult(emptyList(), "HTTP_200_NO_H2_HEADINGS", 0, 0)
         }
 
         val records = mutableListOf<BulletinCveRecord>()
@@ -163,9 +157,7 @@ object AndroidBulletinIntelligence {
 
         for ((index, heading) in headings.withIndex()) {
             val headingText = clean(heading.groupValues[1])
-            val patchMatch = patchHeaderRegex.find(headingText)
-                ?: continue
-
+            val patchMatch = patchHeaderRegex.find(headingText) ?: continue
             val patchLevel = patchMatch.groupValues[1]
 
             val patchDate = try {
@@ -175,83 +167,126 @@ object AndroidBulletinIntelligence {
             }
 
             if (!patchDate.isAfter(installedPatch)) continue
-
             patchSections++
 
-            val sectionEnd = headings
-                .getOrNull(index + 1)
-                ?.range
-                ?.first ?: html.length
+            val sectionEnd = headings.getOrNull(index + 1)
+                ?.range?.first ?: html.length
 
-            val section = html.substring(
-                heading.range.last + 1,
-                sectionEnd
-            )
-
+            val section = html.substring(heading.range.last + 1, sectionEnd)
             var component = "Unspecified component"
 
             val blocks = Regex(
-                """(?is)<h3\b[^>]*>(.*?)</h3>|<tr\b[^>]*>(.*?)</tr>"""
+                """(?is)<h3\b[^>]*>(.*?)</h3>|<table\b[^>]*>(.*?)</table>"""
             )
 
             for (block in blocks.findAll(section)) {
                 val componentHtml = block.groupValues[1]
-                val rowHtml = block.groupValues[2]
+                val tableHtml = block.groupValues[2]
 
                 if (componentHtml.isNotBlank()) {
                     component = clean(componentHtml)
                     continue
                 }
 
-                if (rowHtml.isBlank()) continue
+                if (tableHtml.isBlank()) continue
 
-                val cells = Regex(
-                    """(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>"""
-                ).findAll(rowHtml).map {
-                    clean(it.groupValues[1])
+                val rows = Regex(
+                    """(?is)<tr\b[^>]*>(.*?)</tr>"""
+                ).findAll(tableHtml).map {
+                    it.groupValues[1]
                 }.toList()
 
-                if (cells.size < 5) continue
+                if (rows.size < 2) continue
 
-                val cve = cells[0].uppercase()
-
-                if (!Regex("""^CVE-\d{4}-\d{4,}$""").matches(cve)) {
-                    continue
+                fun cellsFrom(rowHtml: String): List<String> {
+                    return Regex(
+                        """(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>"""
+                    ).findAll(rowHtml).map {
+                        clean(it.groupValues[1])
+                    }.toList()
                 }
 
-                val type = cells[2]
-                val severity = cells[3]
-                val versions = cells[4]
-
-                val androidVersionListed = Regex(
-                    """(?<!\d)$androidMajor(?!\d)"""
-                ).containsMatchIn(versions)
-
-                val status = when {
-                    type.isBlank() ||
-                    severity.isBlank() ||
-                    versions.isBlank() ->
-                        "APPLICABILITY_UNKNOWN"
-
-                    androidVersionListed ->
-                        "POTENTIALLY_RELEVANT"
-
-                    else ->
-                        "ANDROID_VERSION_NOT_LISTED"
+                val headers = cellsFrom(rows.first()).map {
+                    it.lowercase(Locale.ROOT)
+                        .replace(Regex("[^a-z0-9]+"), " ")
+                        .trim()
                 }
 
-                records.add(
-                    BulletinCveRecord(
-                        cve = cve,
-                        patchLevel = patchLevel,
-                        component = component,
-                        vulnerabilityType = type.ifBlank { "Not stated" },
-                        severity = severity.ifBlank { "Not stated" },
-                        affectedVersions = versions,
-                        status = status,
-                        source = source
+                val cveColumn = headers.indexOfFirst {
+                    it == "cve" || it.startsWith("cve ")
+                }
+                val typeColumn = headers.indexOfFirst { it == "type" }
+                val severityColumn = headers.indexOfFirst { it == "severity" }
+                val aospVersionsColumn = headers.indexOfFirst {
+                    it.contains("aosp") && it.contains("version")
+                }
+                val subcomponentColumn = headers.indexOfFirst {
+                    it == "subcomponent"
+                }
+
+                if (cveColumn < 0 || severityColumn < 0) continue
+
+                for (rowHtml in rows.drop(1)) {
+                    val cells = cellsFrom(rowHtml)
+                    val cve = cells.getOrNull(cveColumn)
+                        ?.uppercase(Locale.ROOT)
+                        .orEmpty()
+
+                    if (!Regex("""^CVE-\d{4}-\d{4,}$""").matches(cve)) {
+                        continue
+                    }
+
+                    val type = cells.getOrNull(typeColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Not stated by source"
+
+                    val severity = cells.getOrNull(severityColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Not stated"
+
+                    val aospVersions = cells.getOrNull(aospVersionsColumn)
+                        ?.takeIf { it.isNotBlank() }
+
+                    val vendorSubcomponent = cells.getOrNull(subcomponentColumn)
+                        ?.takeIf { it.isNotBlank() }
+
+                    val androidVersionListed = aospVersions
+                        ?.split(Regex("[,;\\s]+"))
+                        ?.any { token ->
+                            token.trim().matches(
+                                Regex(
+                                    """${androidMajor}(?:-qpr\d+)?""",
+                                    RegexOption.IGNORE_CASE
+                                )
+                            )
+                        } == true
+
+                    val status = when {
+                        aospVersions == null -> "APPLICABILITY_UNKNOWN"
+                        androidVersionListed -> "POTENTIALLY_RELEVANT"
+                        else -> "ANDROID_VERSION_NOT_LISTED"
+                    }
+
+                    val affectedVersions = when {
+                        aospVersions != null -> aospVersions
+                        vendorSubcomponent != null ->
+                            "Vendor subcomponent: $vendorSubcomponent"
+                        else -> "Not provided by source"
+                    }
+
+                    records.add(
+                        BulletinCveRecord(
+                            cve = cve,
+                            patchLevel = patchLevel,
+                            component = component,
+                            vulnerabilityType = type,
+                            severity = severity,
+                            affectedVersions = affectedVersions,
+                            status = status,
+                            source = source
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -261,12 +296,7 @@ object AndroidBulletinIntelligence {
             else -> "HTTP_200_PARSED"
         }
 
-        return MonthResult(
-            records,
-            status,
-            headings.size,
-            patchSections
-        )
+        return MonthResult(records, status, headings.size, patchSections)
     }
 
     fun scan(
@@ -398,6 +428,12 @@ Reason: Invalid Android security patch date.
             appendLine("POTENTIALLY RELEVANT: $potentiallyRelevant")
             appendLine("APPLICABILITY UNKNOWN: $unknown")
             appendLine("ANDROID VERSION NOT LISTED: $notListed")
+            appendLine(
+                "VENDOR COMPONENTS (APPLICABILITY UNKNOWN): " +
+                    uniqueRecords.count {
+                        it.affectedVersions.startsWith("Vendor subcomponent:")
+                    }
+            )
             appendLine()
 
             appendLine("FETCH AND PARSER DIAGNOSTICS")
