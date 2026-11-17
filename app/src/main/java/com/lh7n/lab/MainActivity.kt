@@ -71,6 +71,54 @@ class MainActivity : Activity() {
         """.trimIndent()
     }
 
+    private fun rootTestHistoryReport(): String {
+        val history = preferences.getString("history", "") ?: ""
+        val rootEntries = history.lines()
+            .filter { it.contains("Root Capability:") }
+
+        val lastDetails = preferences.getString("last_root_probe", "") ?: ""
+
+        return buildString {
+            appendLine("LH7n LAB — ROOT TEST HISTORY")
+            appendLine("============================")
+            appendLine("Total recorded tests: ${rootEntries.size}")
+            appendLine()
+            appendLine("LATEST TESTS")
+            appendLine("------------")
+
+            if (rootEntries.isEmpty()) {
+                appendLine("No Root tests recorded.")
+            } else {
+                rootEntries.forEachIndexed { index, entry ->
+                    appendLine("${index + 1}. $entry")
+                }
+            }
+
+            appendLine()
+            appendLine("LATEST TEST DETAILS")
+            appendLine("-------------------")
+            appendLine(lastDetails.ifBlank { "No detailed test available." })
+            appendLine()
+            appendLine("Storage: SharedPreferences")
+            appendLine("History limit: 30 general records")
+        }
+    }
+
+    private fun exportRootHistory() {
+        pendingExport = rootTestHistoryReport()
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(
+                Intent.EXTRA_TITLE,
+                "LH7n-Root-History-${timestamp().replace(":", "-")}.txt"
+            )
+        }
+
+        startActivityForResult(intent, 102)
+    }
+
     private fun exportReport() {
         pendingExport = report.text.toString()
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
@@ -296,6 +344,14 @@ class MainActivity : Activity() {
             report.text = historyReport()
         })
 
+        content.addView(makeButton("سجل اختبارات Root") {
+            report.text = rootTestHistoryReport()
+        })
+
+        content.addView(makeButton("تصدير سجل Root TXT") {
+            exportRootHistory()
+        })
+
         content.addView(makeButton("تصدير التقرير TXT") {
             exportReport()
         })
@@ -357,7 +413,7 @@ class MainActivity : Activity() {
 
         val uri: Uri = data?.data ?: return
 
-        if (requestCode == 101) {
+        if (requestCode == 101 || requestCode == 102) {
             try {
                 val output = contentResolver.openOutputStream(uri)
                     ?: throw Exception("تعذر إنشاء الملف")
