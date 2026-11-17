@@ -253,8 +253,8 @@ class MainActivity : Activity() {
             showReport("Device Diagnostics", deviceReport())
         })
 
-        content.addView(makeButton("فحص مؤشرات Root") {
-            showReport("Root Detection", rootIndicators())
+        content.addView(makeButton("فحص بيئة Root المتقدم") {
+            showReport("Root Environment Status", RootEnvironmentMonitor(this).report())
         })
 
         content.addView(makeButton("فحص مزوّد Root") {
