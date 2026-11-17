@@ -30,44 +30,79 @@ object AndroidBulletinIntelligence {
     private const val BASE =
         "https://source.android.com/docs/security/bulletin"
 
-    private val cveRegex =
-        Regex("""CVE-\d{4}-\d{4,}""", RegexOption.IGNORE_CASE)
-
     private val patchHeaderRegex = Regex(
         """(20\d{2}-\d{2}-0[15])\s+security patch level vulnerability details""",
         RegexOption.IGNORE_CASE
     )
 
-    private fun fetch(url: String): String? {
+    private data class FetchResult(
+        val html: String?,
+        val status: String
+    )
+
+    private data class MonthResult(
+        val records: List<BulletinCveRecord>,
+        val fetchStatus: String,
+        val headings: Int,
+        val patchSections: Int
+    )
+
+    private fun fetch(url: String): FetchResult {
         var connection: HttpURLConnection? = null
 
         return try {
             connection = URL(url).openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 5000
-            connection.readTimeout = 7000
+            connection.connectTimeout = 10000
+            connection.readTimeout = 12000
             connection.instanceFollowRedirects = true
+
             connection.setRequestProperty(
                 "User-Agent",
-                "LH7n-Lab-Security-Agent/1.0"
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
             )
-            connection.setRequestProperty(
-                "Accept",
-                "text/html"
+            connection.setRequestProperty("Accept", "text/html")
+            connection.setRequestProperty("Accept-Encoding", "identity")
+
+            val code = connection.responseCode
+
+            if (code != HttpURLConnection.HTTP_OK) {
+                FetchResult(null, "HTTP_$code")
+            } else {
+                val html = connection.inputStream
+                    .bufferedReader(Charsets.UTF_8)
+                    .use { it.readText() }
+
+                if (html.isBlank()) {
+                    FetchResult(null, "EMPTY_RESPONSE")
+                } else {
+                    FetchResult(html, "HTTP_200")
+                }
+            }
+        } catch (e: Exception) {
+            FetchResult(
+                null,
+                "NETWORK_ERROR: ${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
             )
-
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                return null
-            }
-
-            connection.inputStream.bufferedReader().use {
-                it.readText()
-            }
-        } catch (_: Exception) {
-            null
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private fun clean(value: String): String {
+        return value
+            .replace(Regex("(?is)<script\\b.*?</script>"), " ")
+            .replace(Regex("(?is)<style\\b.*?</style>"), " ")
+            .replace(Regex("<[^>]+>"), " ")
+            .replace("&nbsp;", " ")
+            .replace("&#160;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun monthList(
@@ -86,64 +121,51 @@ object AndroidBulletinIntelligence {
         return result
     }
 
-    private fun cleanHtml(html: String): String {
-        return html
-            .replace(Regex("(?i)<br\\s*/?>"), "\n")
-            .replace(
-                Regex("(?i)<h3[^>]*>"),
-                "\n### "
-            )
-            .replace(
-                Regex("(?i)</(td|th)>"),
-                " | "
-            )
-            .replace(
-                Regex("(?i)</(tr|h2|h3|h4|p|li|section|div)>"),
-                "\n"
-            )
-            .replace(Regex("<[^>]+>"), " ")
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("\r", "")
-            .replace(Regex("[\\t ]+"), " ")
-            .replace(Regex(" *\\n *"), "\n")
-    }
-
     private fun parseBulletin(
         month: LocalDate,
         installedPatch: LocalDate,
         androidMajor: Int
-    ): List<BulletinCveRecord> {
+    ): MonthResult {
 
-        val year = month.year
-        val monthNumber = "%02d".format(month.monthValue)
-        val bulletinDate = "$year-$monthNumber-01"
-        val source = "$BASE/$bulletinDate"
-
-        val html = fetch(source) ?: return emptyList()
-        val records = mutableListOf<BulletinCveRecord>()
-
-        val patchPattern = Regex(
-            """(?is)<h2\b[^>]*>(.*?)</h2>"""
+        val date = "%04d-%02d-01".format(
+            month.year,
+            month.monthValue
         )
-        val headingMatches = patchPattern.findAll(html).toList()
 
-        for ((index, heading) in headingMatches.withIndex()) {
-            val headingText = heading.groupValues[1]
-                .replace(Regex("<[^>]+>"), " ")
-                .replace("&nbsp;", " ")
-                .replace("&amp;", "&")
-                .replace(Regex("\\s+"), " ")
-                .trim()
+        val source = "$BASE/$date"
+        val downloaded = fetch(source)
 
+        val html = downloaded.html
+            ?: return MonthResult(
+                emptyList(),
+                downloaded.status,
+                0,
+                0
+            )
+
+        val headings = Regex(
+            """(?is)<h2\b[^>]*>(.*?)</h2>"""
+        ).findAll(html).toList()
+
+        if (headings.isEmpty()) {
+            return MonthResult(
+                emptyList(),
+                "HTTP_200_NO_H2_HEADINGS",
+                0,
+                0
+            )
+        }
+
+        val records = mutableListOf<BulletinCveRecord>()
+        var patchSections = 0
+
+        for ((index, heading) in headings.withIndex()) {
+            val headingText = clean(heading.groupValues[1])
             val patchMatch = patchHeaderRegex.find(headingText)
                 ?: continue
 
             val patchLevel = patchMatch.groupValues[1]
+
             val patchDate = try {
                 LocalDate.parse(patchLevel)
             } catch (_: Exception) {
@@ -152,11 +174,12 @@ object AndroidBulletinIntelligence {
 
             if (!patchDate.isAfter(installedPatch)) continue
 
-            val sectionEnd = headingMatches
+            patchSections++
+
+            val sectionEnd = headings
                 .getOrNull(index + 1)
                 ?.range
-                ?.first
-                ?: html.length
+                ?.first ?: html.length
 
             val section = html.substring(
                 heading.range.last + 1,
@@ -165,21 +188,16 @@ object AndroidBulletinIntelligence {
 
             var component = "Unspecified component"
 
-            val blockPattern = Regex(
+            val blocks = Regex(
                 """(?is)<h3\b[^>]*>(.*?)</h3>|<tr\b[^>]*>(.*?)</tr>"""
             )
 
-            for (block in blockPattern.findAll(section)) {
+            for (block in blocks.findAll(section)) {
                 val componentHtml = block.groupValues[1]
                 val rowHtml = block.groupValues[2]
 
                 if (componentHtml.isNotBlank()) {
-                    component = componentHtml
-                        .replace(Regex("<[^>]+>"), " ")
-                        .replace("&nbsp;", " ")
-                        .replace("&amp;", "&")
-                        .replace(Regex("\\s+"), " ")
-                        .trim()
+                    component = clean(componentHtml)
                     continue
                 }
 
@@ -187,24 +205,14 @@ object AndroidBulletinIntelligence {
 
                 val cells = Regex(
                     """(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>"""
-                ).findAll(rowHtml)
-                    .map { cell ->
-                        cell.groupValues[1]
-                            .replace(Regex("<[^>]+>"), " ")
-                            .replace("&nbsp;", " ")
-                            .replace("&amp;", "&")
-                            .replace("&lt;", "<")
-                            .replace("&gt;", ">")
-                            .replace("&quot;", "\"")
-                            .replace("&#39;", "'")
-                            .replace(Regex("\\s+"), " ")
-                            .trim()
-                    }
-                    .toList()
+                ).findAll(rowHtml).map {
+                    clean(it.groupValues[1])
+                }.toList()
 
                 if (cells.size < 5) continue
 
                 val cve = cells[0].uppercase()
+
                 if (!Regex("""^CVE-\d{4}-\d{4,}$""").matches(cve)) {
                     continue
                 }
@@ -213,16 +221,14 @@ object AndroidBulletinIntelligence {
                 val severity = cells[3]
                 val versions = cells[4]
 
-                val validType = type in listOf("RCE", "EoP", "ID", "DoS")
-                val validSeverity = severity in
-                    listOf("Critical", "High", "Medium", "Low")
-
                 val androidVersionListed = Regex(
                     """(?<!\d)$androidMajor(?!\d)"""
                 ).containsMatchIn(versions)
 
                 val status = when {
-                    !validType || !validSeverity || versions.isBlank() ->
+                    type.isBlank() ||
+                    severity.isBlank() ||
+                    versions.isBlank() ->
                         "APPLICABILITY_UNKNOWN"
 
                     androidVersionListed ->
@@ -237,8 +243,8 @@ object AndroidBulletinIntelligence {
                         cve = cve,
                         patchLevel = patchLevel,
                         component = component,
-                        vulnerabilityType = if (validType) type else "Not stated",
-                        severity = if (validSeverity) severity else "Not stated",
+                        vulnerabilityType = type.ifBlank { "Not stated" },
+                        severity = severity.ifBlank { "Not stated" },
                         affectedVersions = versions,
                         status = status,
                         source = source
@@ -247,7 +253,18 @@ object AndroidBulletinIntelligence {
             }
         }
 
-        return records
+        val status = when {
+            patchSections == 0 -> "HTTP_200_NO_PATCH_SECTIONS"
+            records.isEmpty() -> "HTTP_200_NO_CVE_ROWS"
+            else -> "HTTP_200_PARSED"
+        }
+
+        return MonthResult(
+            records,
+            status,
+            headings.size,
+            patchSections
+        )
     }
 
     fun scan(
@@ -270,38 +287,64 @@ Reason: Invalid Android security patch date.
             )
         }
 
-        val months = monthList(
-            patchDate,
-            LocalDate.now()
-        )
-
+        val months = monthList(patchDate, LocalDate.now())
         val executor = Executors.newFixedThreadPool(4)
 
         val futures = months.map { month ->
-            executor.submit(
+            month to executor.submit(
                 Callable {
-                    parseBulletin(
-                        month,
-                        patchDate,
-                        androidMajor
-                    )
+                    parseBulletin(month, patchDate, androidMajor)
                 }
             )
         }
 
         val allRecords = mutableListOf<BulletinCveRecord>()
-        var successful = 0
+        val diagnostics = mutableListOf<String>()
+
+        var httpSuccess = 0
+        var parsedBulletins = 0
+        var patchSections = 0
+        var headingCount = 0
+        var failures = 0
 
         try {
-            futures.forEach { future ->
-                try {
-                    val result = future.get(45, TimeUnit.SECONDS)
-                    if (result.isNotEmpty()) {
-                        successful++
-                        allRecords.addAll(result)
-                    }
-                } catch (_: Exception) {
+            for ((month, future) in futures) {
+                val result = try {
+                    future.get(45, TimeUnit.SECONDS)
+                } catch (e: Exception) {
                     future.cancel(true)
+                    failures++
+
+                    diagnostics.add(
+                        "%04d-%02d: TIMEOUT_OR_TASK_ERROR (%s)".format(
+                            month.year,
+                            month.monthValue,
+                            e.javaClass.simpleName
+                        )
+                    )
+                    continue
+                }
+
+                if (result.fetchStatus.startsWith("HTTP_200")) {
+                    httpSuccess++
+                }
+
+                if (result.fetchStatus == "HTTP_200_PARSED") {
+                    parsedBulletins++
+                }
+
+                patchSections += result.patchSections
+                headingCount += result.headings
+                allRecords.addAll(result.records)
+
+                if (result.fetchStatus != "HTTP_200_PARSED") {
+                    diagnostics.add(
+                        "%04d-%02d: %s".format(
+                            month.year,
+                            month.monthValue,
+                            result.fetchStatus
+                        )
+                    )
                 }
             }
         } finally {
@@ -312,11 +355,11 @@ Reason: Invalid Android security patch date.
             .distinctBy { "${it.cve}:${it.patchLevel}" }
             .sortedWith(
                 compareByDescending<BulletinCveRecord> {
-                    when (it.severity) {
-                        "Critical" -> 4
-                        "High" -> 3
-                        "Medium" -> 2
-                        "Low" -> 1
+                    when (it.severity.lowercase()) {
+                        "critical" -> 4
+                        "high" -> 3
+                        "medium" -> 2
+                        "low" -> 1
                         else -> 0
                     }
                 }.thenBy { it.cve }
@@ -340,12 +383,34 @@ Reason: Invalid Android security patch date.
             appendLine("Installed patch: $installedPatch")
             appendLine("Android major version: $androidMajor")
             appendLine("Bulletin months checked: ${months.size}")
-            appendLine("Bulletins with parsed CVEs: $successful")
+            appendLine("HTTP successful pages: $httpSuccess")
+            appendLine("Bulletins with parsed CVEs: $parsedBulletins")
+            appendLine("Patch sections detected: $patchSections")
+            appendLine("HTML headings detected: $headingCount")
             appendLine("Unique CVE entries: ${uniqueRecords.size}")
+            appendLine("Network/task failures: $failures")
             appendLine()
+
             appendLine("POTENTIALLY RELEVANT: $potentiallyRelevant")
             appendLine("APPLICABILITY UNKNOWN: $unknown")
             appendLine("ANDROID VERSION NOT LISTED: $notListed")
+            appendLine()
+
+            appendLine("FETCH AND PARSER DIAGNOSTICS")
+            appendLine("----------------------------")
+
+            if (diagnostics.isEmpty()) {
+                appendLine("No fetch or parser failures reported.")
+            } else {
+                diagnostics.take(12).forEach {
+                    appendLine(it)
+                }
+
+                if (diagnostics.size > 12) {
+                    appendLine("Additional diagnostic entries: ${diagnostics.size - 12}")
+                }
+            }
+
             appendLine()
             appendLine("CVE RESULTS")
             appendLine("-----------")
@@ -353,7 +418,7 @@ Reason: Invalid Android security patch date.
             if (uniqueRecords.isEmpty()) {
                 appendLine(
                     "No CVE records were parsed. " +
-                    "This does not mean the device has no vulnerabilities."
+                    "This is not evidence that the device has no vulnerabilities."
                 )
             }
 
@@ -392,8 +457,7 @@ Reason: Invalid Android security patch date.
                 "No exploit or device modification was performed."
             )
             appendLine(
-                "Potentially relevant means patch and version indicators match; " +
-                "it is not a confirmed vulnerability."
+                "Potentially relevant is not a confirmed vulnerability."
             )
         }
 
@@ -401,7 +465,7 @@ Reason: Invalid Android security patch date.
             report = report,
             records = uniqueRecords,
             bulletinsChecked = months.size,
-            successfulBulletins = successful
+            successfulBulletins = parsedBulletins
         )
     }
 }
