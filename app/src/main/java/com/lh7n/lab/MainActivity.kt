@@ -265,6 +265,15 @@ class MainActivity : Activity() {
             showReport("Root Provider Monitor", rootProviderReport())
         })
 
+        content.addView(makeButton("اختبار صلاحية Root الفعلية") {
+            Thread {
+                val result = RootCapabilityProbe.run()
+                runOnUiThread {
+                    showReport("Root Capability Test", result)
+                }
+            }.start()
+        })
+
         content.addView(makeButton("عرض سجل الفحوصات") {
             report.text = historyReport()
         })
