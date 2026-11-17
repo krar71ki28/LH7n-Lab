@@ -383,19 +383,21 @@ object SecurityAgent {
             androidMajor = Build.VERSION.SDK_INT - 20
         )
 
+        val mediatekResult = MediaTekBulletinIntelligence.scan()
+
         return SecurityScanResult(
             timestamp = timestamp(),
             score = score,
             device = "${Build.MANUFACTURER} ${Build.MODEL}",
             android = "${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
             findings = findings,
-            bulletinReport = bulletinResult.report,
+            bulletinReport = bulletinResult.report + "\\n\\n" + mediatekResult.report,
             limitations = listOf(
                 "Android package visibility can hide applications from this scanner.",
                 "This version does not inspect every installed application's permissions.",
                 "Root manager detection does not prove active root access.",
                 "Filesystem visibility is restricted by Android application sandboxing.",
-                "No CVE database or exploit testing is included in this version.",
+                "No exploit testing or OEM patch verification is performed.",
                 "The score is a heuristic and must not be treated as a probability."
             )
         )
